@@ -588,8 +588,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--black);min
 //  CONFIGURATION — paste your deployed Apps Script URL here
 //  Leave as empty string to run in local-only mode
 // ============================================================
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwD-fo3aC_5MzTQqNysx_i2FjRfrOBY38omYNDoXMNVgh8M2GEOew9Uj1gEGDeAaBB8XQ/exec';
-
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzV152OIRhQz9cRxbkSsowxysyorleVLeF_CQRX6qK1cPbC5fCr7Cl4s_uMbCTL3tLDUA/exec';
 // ============================================================
 //  STATE
 // ============================================================
@@ -615,11 +614,9 @@ const API_READY = !!SCRIPT_URL;
 
 async function api(action, data = {}) {
   if (!SCRIPT_URL) throw new Error('No SCRIPT_URL configured');
-  const resp = await fetch(SCRIPT_URL, {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({action, ...data}),
-  });
+  const payload = encodeURIComponent(JSON.stringify(data));
+  const url = `${SCRIPT_URL}?action=${action}&payload=${payload}`;
+  const resp = await fetch(url, {method: 'GET'});
   if (!resp.ok) throw new Error('HTTP ' + resp.status);
   return resp.json();
 }
