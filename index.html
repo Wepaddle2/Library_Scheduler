@@ -611,7 +611,7 @@ let state = {
 // ============================================================
 //  API HELPER
 // ============================================================
-const API_READY = !!SCRIPT_URL;
+const API_READY = !!FIREBASE_URL;
 
 function api(action, data = {}) {
   if (!SCRIPT_URL) return Promise.reject(new Error('No SCRIPT_URL configured'));
