@@ -319,7 +319,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--black);min
   <div class="login-card">
     <h2>Welcome</h2>
     <p>Sign in to access the volunteer schedule.</p>
-    <div id="sync-setup-notice" style="background:var(--blue-pale);border:1.5px solid var(--blue);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.78rem;color:var(--blue);display:none;" hidden>
+    <div id="sync-setup-notice" style="background:var(--blue-pale);border:1.5px solid var(--blue);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.78rem;color:var(--blue);display:none;">
       ⚙️ <strong>Setup needed:</strong> Add your Apps Script URL in the code (SCRIPT_URL). Until then, the app runs locally only.
     </div>
     <div class="login-tabs">
@@ -466,7 +466,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--black);min
     <div style="background:var(--offwhite);border-radius:8px;padding:12px;margin-bottom:14px;font-size:0.8rem;color:var(--gray);">
       <strong style="color:var(--black);display:block;margin-bottom:4px;">☁️ Cloud Sync Status</strong>
       <span id="sync-status-text">Not configured — data saved locally only.</span>
-      <br><span style="font-size:0.72rem;margin-top:4px;display:block;">Data syncs automatically across all devices via JSONbin.</span>
+      <br><span style="font-size:0.72rem;margin-top:4px;display:block;">Set SCRIPT_URL in the code to enable shared data across devices.</span>
     </div>
     <button class="btn btn-outline btn-sm" id="push-to-sheet-btn" style="margin-bottom:10px">⬆ Push All Data to Sheet</button>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -588,12 +588,7 @@ body{font-family:var(--font-body);background:var(--cream);color:var(--black);min
 //  CONFIGURATION — paste your deployed Apps Script URL here
 //  Leave as empty string to run in local-only mode
 // ============================================================
-// ============================================================
-//  JSONBIN CONFIGURATION
-// ============================================================
-const BIN_ID  = '6a291a25f5f4af5e29d6b34d';
-const API_KEY = '$2a$10$zZbdSeIUQUQRH5tWIRVjfOR0p.A61LjofqxM1zN0u.WUEUWHAL0aa';
-const BIN_URL = 'https://api.jsonbin.io/v3/b/' + BIN_ID;
+const SCRIPT_URL = '';  // e.g. 'https://script.google.com/macros/s/XXX/exec'
 
 // ============================================================
 //  STATE
@@ -614,24 +609,37 @@ let state = {
 };
 
 // ============================================================
-//  JSONBIN API
+//  API HELPER
 // ============================================================
-async function readBin() {
-  const resp = await fetch(BIN_URL + '/latest', {
-    headers: {'X-Master-Key': API_KEY, 'X-Bin-Meta': 'false'}
-  });
-  if (!resp.ok) throw new Error('Read failed: ' + resp.status);
-  return resp.json();
-}
+const API_READY = !!SCRIPT_URL;
 
-async function writeBin(data) {
-  const resp = await fetch(BIN_URL, {
-    method: 'PUT',
-    headers: {'Content-Type':'application/json', 'X-Master-Key': API_KEY},
-    body: JSON.stringify(data)
+function api(action, data = {}) {
+  if (!SCRIPT_URL) return Promise.reject(new Error('No SCRIPT_URL configured'));
+  return new Promise((resolve, reject) => {
+    const cbName = '_cb_' + Date.now() + Math.floor(Math.random() * 10000);
+    const payload = encodeURIComponent(JSON.stringify(data));
+    const url = `${SCRIPT_URL}?action=${action}&payload=${payload}&callback=${cbName}`;
+    window[cbName] = function(result) {
+      delete window[cbName];
+      document.head.removeChild(script);
+      resolve(result);
+    };
+    const script = document.createElement('script');
+    script.src = url;
+    script.onerror = function() {
+      delete window[cbName];
+      document.head.removeChild(script);
+      reject(new Error('JSONP request failed'));
+    };
+    setTimeout(() => {
+      if (window[cbName]) {
+        delete window[cbName];
+        try { document.head.removeChild(script); } catch(e) {}
+        reject(new Error('Request timed out'));
+      }
+    }, 15000);
+    document.head.appendChild(script);
   });
-  if (!resp.ok) throw new Error('Write failed: ' + resp.status);
-  return resp.json();
 }
 
 function showSync(msg, isErr) {
@@ -640,25 +648,21 @@ function showSync(msg, isErr) {
   clearTimeout(b._t); b._t = setTimeout(() => b.className = '', 2800);
 }
 
-// Debounced write to JSONbin
+// Debounced background sync of shifts + settings
 let _syncTimer = null;
 function queueSync() {
+  if (!API_READY) return;
   clearTimeout(_syncTimer);
   _syncTimer = setTimeout(async () => {
     try {
-      await writeBin({
-        entries: state.entries,
-        openShifts: state.openShifts,
-        changeLog: state.changeLog,
-        shifts: state.shifts,
-        settings: {
-          adminPw: state.adminPw, userPw: state.userPw,
-          lockAll: state.lockAll, lockPast: state.lockPast,
-          lockedMonths: state.lockedMonths,
-        }
+      await api('saveShifts', {shifts: state.shifts});
+      await api('saveSettings', {
+        adminPw: state.adminPw, userPw: state.userPw,
+        lockAll: state.lockAll, lockPast: state.lockPast,
+        lockedMonths: state.lockedMonths,
       });
-      showSync('☁️ Saved');
-    } catch(e) { showSync('⚠ Save failed', true); }
+      showSync('☁️ Synced');
+    } catch(e) { showSync('⚠ Sync failed', true); }
   }, 1500);
 }
 
@@ -692,6 +696,8 @@ function load() {
 }
 load();
 
+// Show setup notice if no URL configured
+if (!API_READY) document.getElementById('sync-setup-notice').style.display='block';
 
 // ============================================================
 //  UTILS
@@ -726,7 +732,7 @@ function addLog(action, {volunteer='',shiftDate='',shiftType='',times='',notes='
   const entry={id:uid(),ts:new Date().toISOString(),action,volunteer,shiftDate,shiftType,times,notes,by:by||state.userName||''};
   state.changeLog.unshift(entry);
   save();
-  
+  if(API_READY){ api('addLog',{entry}).catch(()=>{}); }
 }
 
 // ============================================================
@@ -759,49 +765,51 @@ async function doLogin(){
     const password=document.getElementById('login-pw').value||'';
     let role=null, errorMsg=null;
 
-    // Fetch fresh data from JSONbin first (so we get latest passwords)
-    try {
-      showLoadingOverlay('Loading schedule…');
-      const remote = await readBin();
-      if(remote && remote.settings) {
-        const s = remote.settings;
-        if(s.adminPw) state.adminPw = s.adminPw;
-        if(s.userPw !== undefined) state.userPw = s.userPw;
-        if(s.lockAll !== undefined) state.lockAll = s.lockAll;
-        if(s.lockPast !== undefined) state.lockPast = s.lockPast;
-        if(s.lockedMonths) state.lockedMonths = s.lockedMonths;
-      }
-    } catch(e) { /* use cached passwords */ }
-    finally { hideLoadingOverlay(); }
-
-    // Now validate credentials against latest passwords
-    if(loginMode==='admin'&&password!==state.adminPw){ errorMsg='Incorrect admin password.'; }
-    else if(loginMode==='volunteer'&&state.userPw&&password!==state.userPw){ errorMsg='Incorrect password.'; }
-    else role=loginMode;
+    if(API_READY){
+      try {
+        showLoadingOverlay('Signing in…');
+        const result=await api('login',{name,role:loginMode,password});
+        if(!result.ok) errorMsg=result.error;
+        else role=result.role;
+      } catch(netErr) {
+        // Offline fallback
+        if(loginMode==='admin'&&password!==state.adminPw) errorMsg='Incorrect admin password. (offline mode)';
+        else if(loginMode==='volunteer'&&state.userPw&&password!==state.userPw) errorMsg='Incorrect password. (offline mode)';
+        else role=loginMode;
+      } finally { hideLoadingOverlay(); }
+    } else {
+      // Local-only mode
+      if(loginMode==='admin'&&password!==state.adminPw){ errorMsg='Incorrect admin password.'; }
+      else if(loginMode==='volunteer'&&state.userPw&&password!==state.userPw){ errorMsg='Incorrect password.'; }
+      else role=loginMode;
+    }
 
     if(errorMsg){ toast(errorMsg); return; }
     state.role=role; state.userName=name;
 
-    // Load full state from JSONbin
-    try {
-      showLoadingOverlay('Loading schedule…');
-      const remote = await readBin();
-      if(remote){
-        state.entries    = remote.entries    || state.entries;
-        state.openShifts = remote.openShifts || state.openShifts;
-        state.changeLog  = remote.changeLog  || state.changeLog;
-        state.shifts     = remote.shifts     || state.shifts;
-        const s = remote.settings || {};
-        if(s.adminPw!==undefined) state.adminPw=s.adminPw;
-        if(s.userPw!==undefined)  state.userPw=s.userPw;
-        if(s.lockAll!==undefined) state.lockAll=s.lockAll;
-        if(s.lockPast!==undefined) state.lockPast=s.lockPast;
-        if(s.lockedMonths)        state.lockedMonths=s.lockedMonths;
-        const toCache={...state,role:null,userName:''};
-        localStorage.setItem('nmcl_sched_v2',JSON.stringify(toCache));
-      }
-    } catch(e){ /* use cached data */ }
-    finally { hideLoadingOverlay(); }
+    // Fetch fresh data from sheet
+    if(API_READY){
+      try {
+        showLoadingOverlay('Loading schedule…');
+        const remote=await api('getState');
+        if(remote.ok){
+          state.entries=remote.entries||state.entries;
+          state.openShifts=remote.openShifts||state.openShifts;
+          state.changeLog=remote.changeLog||state.changeLog;
+          state.shifts=remote.shifts||state.shifts;
+          const s=remote.settings||{};
+          if(s.adminPw!==undefined) state.adminPw=s.adminPw;
+          if(s.userPw!==undefined)  state.userPw=s.userPw;
+          if(s.lockAll!==undefined) state.lockAll=s.lockAll;
+          if(s.lockPast!==undefined) state.lockPast=s.lockPast;
+          if(s.lockedMonths)        state.lockedMonths=s.lockedMonths;
+          // Cache locally
+          const toCache={...state,role:null,userName:''};
+          localStorage.setItem('nmcl_sched_v2',JSON.stringify(toCache));
+        }
+      } catch(e){ /* use cached */ }
+      finally { hideLoadingOverlay(); }
+    }
 
     enterApp();
     if(state.lockAll&&state.userPw&&state.role!=='admin') showLockOverlay();
@@ -821,7 +829,7 @@ function enterApp(){
   showScreen('calendar'); renderCalendar(); renderWeekView(); renderDayView();
   if(state.role==='admin'){ renderAdmin(); renderChangeLog(); }
   // Update sync status display
-  document.getElementById('sync-status-text').textContent='Connected to JSONbin ✓ — data syncs across all devices.';
+  document.getElementById('sync-status-text').textContent=API_READY?'Connected to Google Sheet ✓':'Not configured — running locally only.';
 }
 
 document.getElementById('logout-btn').addEventListener('click',()=>{
@@ -917,7 +925,7 @@ function deleteOpenShift(id){
   addLog('deleted',{shiftDate:s.date,shiftType:getShiftLabel(s.shiftId),times:fmtRange(s.start,s.end),notes:'Open shift removed'+(s.claimedBy?' (was claimed by '+s.claimedBy+')':'')});
   state.openShifts=state.openShifts.filter(x=>x.id!==id);
   save(); refreshAllViews();
-  
+  if(API_READY){ api('deleteOpenShift',{id}).catch(()=>{}); }
   if(state.role==='admin'){renderAdmin();renderChangeLog();}
   toast('Open shift removed.');
 }
@@ -953,7 +961,7 @@ document.getElementById('claim-save').addEventListener('click',()=>{
   state.entries.push(newEntry);
   addLog('claimed',{volunteer:name,shiftDate:s.date,shiftType:getShiftLabel(s.shiftId),times:fmtRange(s.start,s.end),notes:notes||s.notes||''});
   save();
-  
+  if(API_READY){ api('claimShift',{shiftId:s.id,claimedBy:name,claimedAt,claimNotes:notes,entry:newEntry}).catch(()=>{}); }
   document.getElementById('claim-modal').classList.remove('open'); state.claimingShiftId=null;
   refreshAllViews(); if(state.role==='admin'){renderAdmin();renderChangeLog();}
   toast(`✓ Shift claimed for ${name}!`);
@@ -1184,11 +1192,11 @@ document.getElementById('modal-save').addEventListener('click',()=>{
     const idx=state.entries.findIndex(e=>e.id===state.editingEntryId);
     if(idx>=0){ entry={...state.entries[idx],date,shiftId,start,end,name,notes}; state.entries[idx]=entry; }
     addLog('edited',{volunteer:name,shiftDate:date,shiftType:getShiftLabel(shiftId),times:fmtRange(start,end),notes});
-    
+    if(API_READY&&entry){ api('saveEntry',{entry}).catch(()=>{}); }
   } else {
     entry={id:uid(),date,shiftId,start,end,name,notes}; state.entries.push(entry);
     addLog('added',{volunteer:name,shiftDate:date,shiftType:getShiftLabel(shiftId),times:fmtRange(start,end),notes});
-    
+    if(API_READY){ api('saveEntry',{entry}).catch(()=>{}); }
   }
   save(); closeModal(); refreshAllViews();
   if(state.role==='admin') renderChangeLog();
@@ -1202,7 +1210,7 @@ document.getElementById('modal-delete').addEventListener('click',()=>{
   if(e){ addLog('deleted',{volunteer:e.name,shiftDate:e.date,shiftType:getShiftLabel(e.shiftId),times:fmtRange(e.start,e.end),notes:e.notes||''}); }
   const id=state.editingEntryId;
   state.entries=state.entries.filter(e=>e.id!==id);
-  
+  if(API_READY){ api('deleteEntry',{id}).catch(()=>{}); }
   save(); closeModal(); refreshAllViews();
   if(state.role==='admin') renderChangeLog();
   toast('Entry deleted.');
@@ -1315,7 +1323,7 @@ document.getElementById('post-open-shift-btn').addEventListener('click',()=>{
   const seriesId=osMode==='repeat'?uid():'';
   const newShifts=datesToPost.map(date=>({id:uid(),date,shiftId,start,end,notes,claimedBy:'',claimedAt:'',postedAt:new Date().toISOString(),postedBy:state.userName,seriesId}));
   newShifts.forEach(s=>{state.openShifts.push(s); addLog('posted',{shiftDate:s.date,shiftType:getShiftLabel(shiftId),times:fmtRange(start,end),notes});});
-  
+  if(API_READY){ newShifts.forEach(s=>api('saveOpenShift',{shift:s}).catch(()=>{})); }
   save();
   document.getElementById('os-date').value=''; document.getElementById('os-repeat-start').value=''; document.getElementById('os-repeat-end').value='';
   document.getElementById('os-start').value=''; document.getElementById('os-end').value=''; document.getElementById('os-notes').value='';
@@ -1380,14 +1388,15 @@ function renderLockedMonths(){
 
 // Push all data to sheet (one-time migration or manual sync)
 document.getElementById('push-to-sheet-btn').addEventListener('click',async()=>{
-  showLoadingOverlay('Saving to JSONbin…');
+  if(!API_READY){toast('No SCRIPT_URL configured.');return;}
+  showLoadingOverlay('Pushing to Sheet…');
   try {
-    await writeBin({
+    const r=await api('saveState',{
       entries:state.entries,openShifts:state.openShifts,changeLog:state.changeLog,shifts:state.shifts,
       settings:{adminPw:state.adminPw,userPw:state.userPw,lockAll:state.lockAll,lockPast:state.lockPast,lockedMonths:state.lockedMonths}
     });
-    toast('✓ All data saved to cloud!');
-  } catch(e){toast('Save failed: '+e.message);}
+    toast(r.ok?'✓ All data pushed to Sheet!':'Push failed: '+(r.error||'unknown'));
+  } catch(e){toast('Push failed: '+e.message);}
   finally{hideLoadingOverlay();}
 });
 
